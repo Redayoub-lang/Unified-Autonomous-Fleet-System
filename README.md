@@ -16,9 +16,9 @@ An enterprise-grade unified autonomous robotics suite integrating **AMR Nav2 Beh
 
 ## Joint State Space Formulation
 
-Global Fleet Joint State Matrix $\mathcal{X}_{\text{Fleet}}(t)$:
+Global Fleet Joint State Matrix $\mathcal{X}_{\mathrm{Fleet}}(t)$:
 
-$$\mathcal{X}_{\text{Fleet}}(t) = \begin{bmatrix} \mathbf{x}_{\text{AMR}}(t) \\ \mathbf{x}_{\text{SLAM\_Map}}(t) \\ \mathbf{x}_{\text{UAV\_1:N}}(t) \\ \mathbf{f}_{\text{ReID\_Targets}}(t) \end{bmatrix}$$
+$$\mathcal{X}_{\mathrm{Fleet}}(t) = \begin{bmatrix} \mathbf{x}_{\mathrm{AMR}}(t) \\ \mathbf{x}_{\mathrm{SLAM}}(t) \\ \mathbf{x}_{\mathrm{UAV\_1:N}}(t) \\ \mathbf{f}_{\mathrm{ReID\_Targets}}(t) \end{bmatrix}$$
 
 ---
 
