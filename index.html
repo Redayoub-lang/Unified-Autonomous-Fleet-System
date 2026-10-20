@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Unified Autonomous Fleet v2.0 - Web C2 Dashboard</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #08080a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #hud-panel {
+            position: absolute; top: 20px; left: 20px; width: 420px;
+            background: rgba(12, 16, 24, 0.88); border: 1px solid #00f0ff;
+            border-radius: 8px; padding: 18px; color: #e0e0e0;
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.25); backdrop-filter: blur(8px);
+        }
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #00f0ff; letter-spacing: 1px; }
+        .hud-line { font-size: 13px; margin: 6px 0; color: #a0a0b0; }
+        .hud-val { color: #00ff66; font-weight: bold; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #00f0ff22; color: #00f0ff; border: 1px solid #00f0ff; }
+    </style>
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div id="hud-panel">
+    <h2>UNIFIED FLEET WEB C2 v2.0 <span class="badge">LIVE WEBSOCKET</span></h2>
+    <div class="hud-line">AMR BASE POSE: <span id="amr-pos" class="hud-val">[0.00, 0.00, 0.00]</span></div>
+    <div class="hud-line">ACTIVE DRONE SWARM: <span id="drone-count" class="hud-val">3 UAVs Online (DMPC)</span></div>
+    <div class="hud-line">OCTOMAP VOXELS: <span id="voxel-count" class="hud-val">120 Streamed</span></div>
+    <div class="hud-line">EDGE AI RE-ID TARGETS: <span id="reid-status" class="hud-val">1 Active Track (#901)</span></div>
+    <div class="hud-line">STREAM LATENCY: <span id="latency-val" class="hud-val">~15 ms</span></div>
+</div>
+
+<script>
+    // 1. Three.js Scene Setup
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x08080a, 0.02);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(12, -20, 25);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // 2. Lighting & Grid
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0x00f0ff, 0.8);
+    dirLight.position.set(20, 20, 40);
+    scene.add(dirLight);
+
+    const gridHelper = new THREE.GridHelper(100, 50, 0x00f0ff, 0x222233);
+    gridHelper.rotation.x = Math.PI / 2;
+    scene.add(gridHelper);
+
+    // 3. Entity Mesh Objects
+    // AMR Ground Base
+    const amrGeo = new THREE.BoxGeometry(1.2, 0.8, 0.5);
+    const amrMat = new THREE.MeshStandardMaterial({ color: 0x00ff66, roughness: 0.3 });
+    const amrMesh = new THREE.Mesh(amrGeo, amrMat);
+    scene.add(amrMesh);
+
+    // Drones Array
+    const droneMeshes = [];
+    const droneMat = new THREE.MeshStandardMaterial({ color: 0xffff00, metalness: 0.8 });
+    for (let i = 0; i < 3; i++) {
+        const dMesh = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.6, 5), droneMat);
+        dMesh.rotation.x = Math.PI / 2;
+        scene.add(dMesh);
+        droneMeshes.push(dMesh);
+    }
+
+    // Re-ID Target Mesh
+    const targetMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.5, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0xff0055, emissive: 0xff0055, emissiveIntensity: 0.5 })
+    );
+    scene.add(targetMesh);
+
+    // Voxel Map Group
+    const voxelGroup = new THREE.Group();
+    scene.add(voxelGroup);
+    const voxelGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+    const voxelMat = new THREE.MeshStandardMaterial({ color: 0x4488ff, transparent: true, opacity: 0.4 });
+
+    // 4. WebSocket Telemetry Client
+    const ws = new WebSocket(`ws://${window.location.host}/ws/telemetry`);
+
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        // Update AMR
+        amrMesh.position.set(data.amr.x, data.amr.y, 0.25);
+        amrMesh.rotation.z = data.amr.theta;
+        document.getElementById('amr-pos').innerText = `[${data.amr.x.toFixed(2)}, ${data.amr.y.toFixed(2)}, 0.00]`;
+
+        // Update Drones
+        data.drones.forEach((d, idx) => {
+            if (droneMeshes[idx]) {
+                droneMeshes[idx].position.set(d.x, d.y, d.z);
+            }
+        });
+
+        // Update Re-ID Target
+        if (data.reid_targets.length > 0) {
+            const t = data.reid_targets[0];
+            targetMesh.position.set(t.x, t.y, 0.5);
+        }
+
+        // Render Voxels Once
+        if (voxelGroup.children.length === 0) {
+            data.voxels.forEach(v => {
+                const vm = new THREE.Mesh(voxelGeo, voxelMat);
+                vm.position.set(v.x, v.y, v.z);
+                voxelGroup.add(vm);
+            });
+        }
+    };
+
+    // Render Loop
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
