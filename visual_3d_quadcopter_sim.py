@@ -4,31 +4,30 @@ from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
-class IndustrialQuadcopterSO3:
-    """Rigid Body Quadcopter Simulator with Tilt Clamping & Ground Disarm Logic."""
-    def __init__(self):
+class SwarmQuadcopterSO3:
+    """Rigid Body Newton-Euler Quadcopter Engine with SO(3) Control."""
+    def __init__(self, drone_id=1, initial_pos=None):
+        self.drone_id = drone_id
         self.m = 0.917            # Mass [kg]
         self.g = 9.81             # Gravity [m/s^2]
-        self.L = 0.39             # Arm length [m]
+        self.L = 0.35             # Arm length [m]
         self.J = np.diag([0.022, 0.022, 0.043])  # Inertia tensor [kg*m^2]
         self.J_inv = np.linalg.inv(self.J)
         self.kT = 2.4e-6          # Thrust coefficient
         self.b = 1.0e-4           # Drag coefficient
 
-        self.p = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        self.p = np.array(initial_pos if initial_pos is not None else [0.0, 0.0, 0.0], dtype=np.float64)
         self.v = np.zeros(3, dtype=np.float64)
         self.R = np.eye(3, dtype=np.float64)
         self.omega = np.zeros(3, dtype=np.float64)
 
-        self.Kp_pos = np.diag([3.5, 3.5, 6.5])
-        self.Kd_pos = np.diag([3.0, 3.0, 4.5])
+        self.Kp_pos = np.diag([4.2, 4.2, 7.5])
+        self.Kd_pos = np.diag([3.2, 3.2, 5.0])
         self.Kr_att = np.diag([12.0, 12.0, 6.0])
         self.Kw_att = np.diag([2.2, 2.2, 1.4])
+        self.max_tilt_rad = np.radians(14.0)
 
-        self.max_tilt_rad = np.radians(12.0)
-
-    def step(self, target_pos, target_vel, is_landing_phase=False, dt=0.025):
-        # 1. Ground Disarm Protection Logic
+    def step(self, target_pos, target_vel, is_landing_phase=False, dt=0.03):
         if is_landing_phase and self.p[2] <= 0.02 and target_pos[2] <= 0.05:
             self.p[2] = 0.0
             self.v = np.zeros(3)
@@ -36,13 +35,11 @@ class IndustrialQuadcopterSO3:
             self.R = np.eye(3)
             return self.p.copy(), 0.0, 0.0
 
-        # 2. Position Control
         e_p = target_pos - self.p
         e_v = target_vel - self.v
         a_des = self.Kp_pos @ e_p + self.Kd_pos @ e_v
         F_des = self.m * (a_des + np.array([0.0, 0.0, self.g]))
 
-        # 3. Tilt Angle Clamping
         z_b_des = F_des / (np.linalg.norm(F_des) + 1e-6)
         max_xy = np.sin(self.max_tilt_rad)
         xy_norm = np.linalg.norm(z_b_des[:2])
@@ -53,7 +50,6 @@ class IndustrialQuadcopterSO3:
         z_b = self.R[:, 2]
         F = max(0.0, np.dot(F_des, z_b))
 
-        # 4. Attitude Control
         x_c = np.array([1.0, 0.0, 0.0])
         y_b_des = np.cross(z_b_des, x_c)
         y_b_des /= (np.linalg.norm(y_b_des) + 1e-6)
@@ -65,7 +61,6 @@ class IndustrialQuadcopterSO3:
         
         M = -self.Kr_att @ e_R - self.Kw_att @ self.omega + np.cross(self.omega, self.J @ self.omega)
 
-        # 5. Dynamics Integration
         e3 = np.array([0.0, 0.0, 1.0])
         v_dot = (self.R @ (F * e3) - self.m * self.g * e3) / self.m
         self.v += v_dot * dt
@@ -102,28 +97,34 @@ def quintic_smooth(t, t0, t1, x0, x1):
     return x0 + s * (x1 - x0)
 
 
-def get_smooth_trajectory(t):
-    if t < 2.5:
-        z_ref = quintic_smooth(t, 0.0, 2.5, 0.0, 1.0)
+def get_expanded_leader_trajectory(t):
+    if t < 3.0:
+        z_ref = quintic_smooth(t, 0.0, 3.0, 0.0, 1.8)
         mode = "TAKEOFF"
-    elif t < 11.5:
-        z_ref = 1.0
-        mode = "HOVER / MANEUVER"
+    elif t < 13.0:
+        z_ref = 1.8
+        mode = "SWARM MANEUVER"
     else:
-        z_ref = quintic_smooth(t, 11.5, 14.0, 1.0, 0.0)
+        z_ref = quintic_smooth(t, 13.0, 16.0, 1.8, 0.0)
         mode = "LANDING"
 
     if t < 3.0: x_ref = 0.0
-    elif t < 5.5: x_ref = quintic_smooth(t, 3.0, 5.5, 0.0, 0.5)
-    elif t < 8.5: x_ref = quintic_smooth(t, 5.5, 8.5, 0.5, -0.91)
-    elif t < 11.5: x_ref = quintic_smooth(t, 8.5, 11.5, -0.91, 0.0)
+    elif t < 7.0: x_ref = quintic_smooth(t, 3.0, 7.0, 0.0, 2.2)
+    elif t < 10.0: x_ref = quintic_smooth(t, 7.0, 10.0, 2.2, -2.2)
+    elif t < 13.0: x_ref = quintic_smooth(t, 10.0, 13.0, -2.2, 0.0)
     else: x_ref = 0.0
 
-    return np.array([x_ref, 0.0, z_ref]), mode
+    if t < 4.0: y_ref = 0.0
+    elif t < 8.0: y_ref = quintic_smooth(t, 4.0, 8.0, 0.0, 1.5)
+    elif t < 11.0: y_ref = quintic_smooth(t, 8.0, 11.0, 1.5, -1.5)
+    elif t < 13.0: y_ref = quintic_smooth(t, 11.0, 13.0, -1.5, 0.0)
+    else: y_ref = 0.0
+
+    return np.array([x_ref, y_ref, z_ref]), mode
 
 
 def generate_cad_mesh():
-    w, h, d = 0.15, 0.10, 0.05
+    w, h, d = 0.16, 0.10, 0.05
     fuselage_v = np.array([
         [-w, -h, -d], [w, -h, -d], [w, h, -d], [-w, h, -d],
         [-w, -h, d],  [w, -h, d],  [w, h, d],  [-w, h, d]
@@ -133,124 +134,135 @@ def generate_cad_mesh():
         [2, 3, 7, 6], [1, 2, 6, 5], [0, 3, 7, 4]
     ]
 
-    angles = np.linspace(0, 2 * np.pi, 16)
-    r_rad = 0.13
-    rotor_circle = np.stack([r_rad * np.cos(angles), r_rad * np.sin(angles), np.zeros(16)], axis=1)
+    angles = np.linspace(0, 2 * np.pi, 12)
+    r_rad = 0.12
+    rotor_circle = np.stack([r_rad * np.cos(angles), r_rad * np.sin(angles), np.zeros(12)], axis=1)
 
     return fuselage_v, fuselage_f, rotor_circle
 
 
-def launch_3d_simulation():
-    drone = IndustrialQuadcopterSO3()
+def launch_expanded_5_drone_swarm():
+    NUM_DRONES = 5
+
+    swarm_offsets = np.array([
+        [ 0.0,  0.0,  0.00],
+        [ 1.2,  1.0,  0.10],
+        [ 1.2, -1.0,  0.10],
+        [-1.2,  1.2, -0.10],
+        [-1.2, -1.2, -0.10]
+    ])
+
+    drone_colors = ['#0284c7', '#dc2626', '#16a34a', '#d97706', '#9333ea']
+
+    drones = [SwarmQuadcopterSO3(drone_id=i+1, initial_pos=swarm_offsets[i] * [1, 1, 0]) for i in range(NUM_DRONES)]
     fuse_v, fuse_f, r_circle = generate_cad_mesh()
 
-    dt = 0.025
-    t_max = 14.0
-    frames = int(t_max / dt)
+    dt = 0.03
+    t_max = 16.0
+    frames_count = int(t_max / dt)
 
-    fig = plt.figure(figsize=(12, 8.5), facecolor='#ffffff')
+    fig = plt.figure(figsize=(13, 8.5), facecolor='#ffffff')
     
-    # 3D View Axis
     ax3d = fig.add_subplot(2, 1, 1, projection='3d')
     ax3d.set_facecolor('#ffffff')
-    ax3d.set_xlim([-1.5, 1.5])
-    ax3d.set_ylim([-1.5, 1.5])
-    ax3d.set_zlim([0.0, 1.4])
-    ax3d.view_init(elev=20, azim=-45)
-    ax3d.set_title("Advanced CAD Quadcopter Flight Simulation\nNewton-Euler Dynamics · SO(3) Control · Virtual 3D View", fontsize=11, fontweight='bold')
+    ax3d.set_xlim([-4.0, 4.0])
+    ax3d.set_ylim([-4.0, 4.0])
+    ax3d.set_zlim([0.0, 2.8])
+    ax3d.view_init(elev=24, azim=-48)
+    ax3d.set_title("Autonomous 5-Quadcopter Fleet Swarm Simulation\nNewton-Euler Dynamics · SO(3) Control · Expanded 3D Airspace", fontsize=11, fontweight='bold')
 
-    # Floor Surface
-    xg, yg = np.meshgrid(np.linspace(-2, 2, 6), np.linspace(-2, 2, 6))
-    ax3d.plot_surface(xg, yg, np.zeros_like(xg), color='#10b981', alpha=0.85, edgecolor='#047857', lw=0.4)
+    xg, yg = np.meshgrid(np.linspace(-4.5, 4.5, 10), np.linspace(-4.5, 4.5, 10))
+    ax3d.plot_surface(xg, yg, np.zeros_like(xg), color='#10b981', alpha=0.75, edgecolor='#047857', lw=0.3)
 
-    # Telemetry HUD Box
     hud_box = fig.text(0.5, 0.47, "", ha='center', va='center', fontsize=10.5, fontweight='bold',
                        bbox=dict(boxstyle='round,pad=0.5', facecolor='#f1f5f9', edgecolor='#0284c7'))
 
-    # 2D Graph Axis
     ax_plot = fig.add_subplot(2, 1, 2)
     ax_plot.set_xlim([0, t_max])
-    ax_plot.set_ylim([-1.2, 1.2])
+    ax_plot.set_ylim([-2.5, 2.5])
     ax_plot.set_xlabel("Time [s]")
     ax_plot.set_ylabel("Position [m]")
     ax_plot.grid(True, linestyle='--', alpha=0.5)
 
-    line_ref_z, = ax_plot.plot([], [], 'r--', lw=1.8, label='Reference Z (Altitude)')
-    line_act_z, = ax_plot.plot([], [], 'b-', lw=2.2, label='Actual Z (Altitude)')
-    line_act_x, = ax_plot.plot([], [], 'g-', lw=2.2, label='Lateral X')
-    ax_plot.legend(loc='upper right')
+    line_ref_z, = ax_plot.plot([], [], 'r--', lw=1.8, label='Leader Target Z')
+    drone_lines_z = [ax_plot.plot([], [], color=drone_colors[i], lw=1.8, label=f'Drone {i+1} Z')[0] for i in range(NUM_DRONES)]
+    ax_plot.legend(loc='upper right', ncol=3)
 
-    time_h, x_h, z_h, ref_z_h, trail_h = [], [], [], [], []
+    time_h, ref_z_h = [], []
+    drones_z_h = [[] for _ in range(NUM_DRONES)]
 
-    # 3D Artists
-    body_poly = Poly3DCollection([], facecolors='#0f172a', edgecolors='#38bdf8', alpha=0.95, linewidths=1.2)
-    ax3d.add_collection3d(body_poly)
+    body_polys, arm_lines_list, rotor_lines_list, trail_lines = [], [], [], []
 
-    arm_lines = [ax3d.plot([], [], [], color='#0284c7', lw=4.5)[0] for _ in range(4)]
-    # Front Rotors (Red) & Rear Rotors (Blue)
-    rotor_lines = [
-        ax3d.plot([], [], [], color='#ef4444', lw=2)[0],
-        ax3d.plot([], [], [], color='#3b82f6', lw=2)[0],
-        ax3d.plot([], [], [], color='#ef4444', lw=2)[0],
-        ax3d.plot([], [], [], color='#3b82f6', lw=2)[0]
-    ]
-    trail_line, = ax3d.plot([], [], [], '--', color='#16a34a', lw=1.5, alpha=0.7)
-    gimbal_led, = ax3d.plot([], [], [], 'ro', ms=7)
+    for i in range(NUM_DRONES):
+        poly = Poly3DCollection([], facecolors=drone_colors[i], edgecolors='#0f172a', alpha=0.9, linewidths=1.0)
+        ax3d.add_collection3d(poly)
+        body_polys.append(poly)
+
+        arms = [ax3d.plot([], [], [], color='#1e293b', lw=3.5)[0] for _ in range(4)]
+        arm_lines_list.append(arms)
+
+        rotors = [ax3d.plot([], [], [], color=drone_colors[i], lw=1.5)[0] for _ in range(4)]
+        rotor_lines_list.append(rotors)
+
+        trail, = ax3d.plot([], [], [], '--', color=drone_colors[i], lw=1.2, alpha=0.5)
+        trail_lines.append(trail)
+
+    drone_trails = [[] for _ in range(NUM_DRONES)]
 
     def update(frame):
         t = frame * dt
-        target_pos, mode_str = get_smooth_trajectory(t)
+        leader_target, mode_str = get_expanded_leader_trajectory(t)
         is_landing = (mode_str == "LANDING")
 
-        pos, tilt, rpm = drone.step(target_pos, np.zeros(3), is_landing_phase=is_landing, dt=dt)
-        trail_h.append(pos.copy())
-
-        # 1. Update Fuselage Mesh
-        tf_fuse = pos + (drone.R @ fuse_v.T).T
-        poly_verts = [[tf_fuse[idx] for idx in face] for face in fuse_f]
-        body_poly.set_verts(poly_verts)
-
-        # 2. Update Arms & Rotors
-        L = drone.L
-        rotor_centers = np.array([[L, L, 0], [-L, -L, 0], [-L, L, 0], [L, -L, 0]])
-        for i in range(4):
-            arm_w = np.stack([pos, pos + drone.R @ rotor_centers[i]])
-            arm_lines[i].set_data(arm_w[:, 0], arm_w[:, 1])
-            arm_lines[i].set_3d_properties(arm_w[:, 2])
-
-            rotor_w = pos + (drone.R @ (rotor_centers[i] + r_circle).T).T
-            rotor_lines[i].set_data(rotor_w[:, 0], rotor_w[:, 1])
-            rotor_lines[i].set_3d_properties(rotor_w[:, 2])
-
-        # 3. Front Gimbal Camera Marker (+X direction)
-        g_pos = pos + drone.R @ np.array([0.20, 0, 0])
-        gimbal_led.set_data([g_pos[0]], [g_pos[1]])
-        gimbal_led.set_3d_properties([g_pos[2]])
-
-        # 4. Trail
-        pts = np.array(trail_h)
-        trail_line.set_data(pts[:, 0], pts[:, 1])
-        trail_line.set_3d_properties(pts[:, 2])
-
-        # HUD Text Box
-        hud_box.set_text(f"MODE: {mode_str:<16} |  x lateral: {pos[0]:+.2f} m  |  z altitude: {pos[2]:+.2f} m  |  tilt: {tilt:.1f}°  |  rotor Ω: {int(rpm)} rad/s")
-
-        # Telemetry Graph Update
         time_h.append(t)
-        x_h.append(pos[0])
-        z_h.append(pos[2])
-        ref_z_h.append(target_pos[2])
+        ref_z_h.append(leader_target[2])
 
+        avg_tilt, avg_rpm = [], []
+
+        for i in range(NUM_DRONES):
+            drone_target = leader_target + swarm_offsets[i]
+            if is_landing:
+                drone_target[2] = leader_target[2]
+
+            pos, tilt, rpm = drones[i].step(drone_target, np.zeros(3), is_landing_phase=is_landing, dt=dt)
+            drone_trails[i].append(pos.copy())
+
+            avg_tilt.append(tilt)
+            avg_rpm.append(rpm)
+
+            tf_fuse = pos + (drones[i].R @ fuse_v.T).T
+            poly_verts = [[tf_fuse[idx] for idx in face] for face in fuse_f]
+            body_polys[i].set_verts(poly_verts)
+
+            L = drones[i].L
+            rotor_centers = np.array([[L, L, 0], [-L, -L, 0], [-L, L, 0], [L, -L, 0]])
+            for r in range(4):
+                arm_w = np.stack([pos, pos + drones[i].R @ rotor_centers[r]])
+                arm_lines_list[i][r].set_data(arm_w[:, 0], arm_w[:, 1])
+                arm_lines_list[i][r].set_3d_properties(arm_w[:, 2])
+
+                rotor_w = pos + (drones[i].R @ (rotor_centers[r] + r_circle).T).T
+                rotor_lines_list[i][r].set_data(rotor_w[:, 0], rotor_w[:, 1])
+                rotor_lines_list[i][r].set_3d_properties(rotor_w[:, 2])
+
+            pts = np.array(drone_trails[i])
+            trail_lines[i].set_data(pts[:, 0], pts[:, 1])
+            trail_lines[i].set_3d_properties(pts[:, 2])
+
+            drones_z_h[i].append(pos[2])
+            drone_lines_z[i].set_data(time_h, drones_z_h[i])
+
+        hud_box.set_text(f"MODE: {mode_str:<20} | Fleet Position: ({leader_target[0]:+.1f}, {leader_target[1]:+.1f}, {leader_target[2]:.1f})m | Avg Tilt: {np.mean(avg_tilt):.1f}° | Avg Rotor Ω: {int(np.mean(avg_rpm))} rad/s")
         line_ref_z.set_data(time_h, ref_z_h)
-        line_act_z.set_data(time_h, z_h)
-        line_act_x.set_data(time_h, x_h)
 
-        return body_poly, trail_line, gimbal_led, line_act_z, line_act_x, hud_box
+        return []
 
-    ani = FuncAnimation(fig, update, frames=frames, interval=25, blit=False)
+    ani = FuncAnimation(fig, update, frames=frames_count, interval=30, blit=False)
+    fig.ani = ani
+
     plt.tight_layout()
     plt.show()
 
 
 if __name__ == "__main__":
-    launch_3d_simulation()
+    launch_expanded_5_drone_swarm()
